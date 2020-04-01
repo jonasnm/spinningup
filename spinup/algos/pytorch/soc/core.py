@@ -12,6 +12,7 @@ def combined_shape(length, shape=None):
         return (length,)
     return (length, shape) if np.isscalar(shape) else (length, *shape)
 
+
 def mlp(sizes, activation, output_activation=nn.Identity):
     layers = []
     for j in range(len(sizes)-1):
@@ -19,12 +20,14 @@ def mlp(sizes, activation, output_activation=nn.Identity):
         layers += [nn.Linear(sizes[j], sizes[j+1]), act()]
     return nn.Sequential(*layers)
 
+
 def count_vars(module):
     return sum([np.prod(p.shape) for p in module.parameters()])
 
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
+
 
 class SquashedGaussianMLPActor(nn.Module):
 
@@ -52,17 +55,19 @@ class SquashedGaussianMLPActor(nn.Module):
 
         if with_logprob:
             # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
-            # NOTE: The correction formula is a little bit magic. To get an understanding 
-            # of where it comes from, check out the original SAC paper (arXiv 1801.01290) 
+            # NOTE: The correction formula is a little bit magic. To get an understanding
+            # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             # Try deriving it yourself as a (very difficult) exercise. :)
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2*(np.log(2) - pi_action - F.softplus(-2*pi_action))).sum(axis=1)
+            logp_pi -= (2*(np.log(2) - pi_action -
+                           F.softplus(-2*pi_action))).sum(axis=1)
         else:
             logp_pi = None
 
         pi_action = torch.tanh(pi_action)
-        pi_action = self.act_limit * pi_action
+        # self.act_limit * pi_action #TODO: Change action-space for my env instead. Though OG seems wrong - does not account for the sign of pi_action, e.g. a in [0,500] to range 500*[-1,1] = [-500,500]
+        pi_action = pi_action
 
         return pi_action, logp_pi
 
@@ -71,15 +76,17 @@ class MLPQFunction(nn.Module):
 
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
         super().__init__()
-        self.q = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
+        self.q = mlp([obs_dim + act_dim] +
+                     list(hidden_sizes) + [1], activation)
 
     def forward(self, obs, act):
         q = self.q(torch.cat([obs, act], dim=-1))
-        return torch.squeeze(q, -1) # Critical to ensure q has right shape.
+        return torch.squeeze(q, -1)  # Critical to ensure q has right shape.
+
 
 class MLPActorCritic(nn.Module):
 
-    def __init__(self, observation_space, action_space, hidden_sizes=(256,256),
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256),
                  activation=nn.ReLU):
         super().__init__()
 
@@ -88,9 +95,56 @@ class MLPActorCritic(nn.Module):
         act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.pi = SquashedGaussianMLPActor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
+        self.pi = SquashedGaussianMLPActor(
+            obs_dim, act_dim, hidden_sizes, activation, act_limit)
         self.q1 = MLPQFunction(obs_dim, act_dim, hidden_sizes, activation)
         self.q2 = MLPQFunction(obs_dim, act_dim, hidden_sizes, activation)
+
+    def act(self, obs, deterministic=False):
+        with torch.no_grad():
+            a, _ = self.pi(obs, deterministic, False)
+            return a.numpy()
+
+
+# Christian Jenssen
+class QwFunction(nn.Module):
+
+    def __init__(self, obs_dim, act_dim, N_options, hidden_sizes, activation):
+        super().__init__()
+        self.z = mlp([obs_dim] + list(hidden_sizes), activation, activation)
+        self.q = mlp([obs_dim + act_dim] +
+                     list(hidden_sizes) + [1], activation)
+        self.Qw = nn.Linear(hidden_sizes[-1], N_options)
+        self.beta = nn.Sequential(
+            nn.Linear(
+                hidden_sizes[-1], N_options),
+            nn.Sigmoid())
+
+    def forward(self, obs, act):
+        q = self.q(torch.cat([obs, act], dim=-1))
+        z = self.z(obs)
+        Qw = self.Qw(z)
+        beta = self.beta(z)
+        return torch.squeeze(q, -1)  # Critical to ensure q has right shape.
+
+
+class MLPOptionCritic(nn.Module):
+
+    def __init__(self, observation_space, action_space, N_options, hidden_sizes=(256, 256),
+                 activation=nn.ReLU):
+        super().__init__()
+
+        obs_dim = observation_space.shape[0]
+        act_dim = action_space.shape[0]
+        act_limit = action_space.high[0]
+
+        # build policy and value functions
+        self.pi = SquashedGaussianMLPActor(
+            obs_dim, act_dim, hidden_sizes, activation, act_limit)
+        self.q1 = QwFunction(
+            obs_dim, act_dim, N_options, hidden_sizes, activation)
+        self.q2 = QwFunction(
+            obs_dim, act_dim, N_options, hidden_sizes, activation)
 
     def act(self, obs, deterministic=False):
         with torch.no_grad():
