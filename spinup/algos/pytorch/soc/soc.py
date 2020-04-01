@@ -291,7 +291,9 @@ def soc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if t > start_steps:
             a = get_action(o)
         else:
-            a = env.action_space.sample()
+            # env.action_space.sample()
+            # TODO: fix for this in the env
+            a = np.array(np.random.uniform(-1, 1), dtype=np.float32)
 
         # Step the env
         o2, r, d, _ = env.step(a)
