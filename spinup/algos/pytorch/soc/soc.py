@@ -188,18 +188,22 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     # Set up function for computing SAC Q-losses
     def compute_loss_q(data):
         o, a, w, r, o2, d = data['obs'], data['act'], data['option'], data['rew'], data['obs2'], data['done']
-
-        q1 = ac.q1(o, a)
-        q2 = ac.q2(o, a)
+        w = torch.as_tensor(w, dtype=torch.long)
+        # TODO:
+        # Qw = ac.Qw(0,w,a)
+        # q1 = ac.q1(o,a,w)
+        q1 = ac.q1(o, a, w)
+        q2 = ac.q2(o, a, w)
 
         # Bellman backup for Q functions
         with torch.no_grad():
             # Target actions come from *current* policy
-            a2, logp_a2 = ac.pi(o2)
+            a2, logp_a2 = ac.pi(o2, w)
 
             # Target Q-values
-            q1_pi_targ = ac_targ.q1(o2, a2)
-            q2_pi_targ = ac_targ.q2(o2, a2)
+            q1_pi_targ = ac_targ.q1(o2, a2, w)
+            q2_pi_targ = ac_targ.q2(o2, a2, w)
+
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
             backup = r + gamma * (1 - d) * (q_pi_targ - alpha * logp_a2)
 
@@ -216,10 +220,10 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
     # Set up function for computing SAC pi loss
     def compute_loss_pi(data):
-        o = data['obs']
-        pi, logp_pi = ac.pi(o)
-        q1_pi = ac.q1(o, pi)
-        q2_pi = ac.q2(o, pi)
+        o, w = data['obs'], data['option']
+        pi, logp_pi = ac.pi(o, w)
+        q1_pi = ac.q1(o, pi, w)
+        q2_pi = ac.q2(o, pi, w)
         q_pi = torch.min(q1_pi, q2_pi)
 
         # Entropy-regularized policy loss
@@ -273,8 +277,8 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
                 p_targ.data.mul_(polyak)
                 p_targ.data.add_((1 - polyak) * p.data)
 
-    def get_action(o, deterministic=False):
-        return ac.act(torch.as_tensor(o, dtype=torch.float32),
+    def get_action(o, w, deterministic=False):
+        return ac.act(torch.as_tensor(o, dtype=torch.float32), torch.as_tensor(w, dtype=torch.long),
                       deterministic)
 
     def test_agent():
@@ -282,7 +286,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
             while not(d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time
-                o, r, d, _ = test_env.step(get_action(o, True))
+                o, r, d, _ = test_env.step(get_action(o, w, True))
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
@@ -299,14 +303,15 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         # from a uniform distribution for better exploration. Afterwards,
         # use the learned policy.
         if t > start_steps:
-            a = get_action(o)
+            a = get_action(o, w)
             # w = get_option(o)
         else:
             # env.action_space.sample()
             # TODO: fix for this in the env
             a = np.array(np.random.uniform(-1, 1), dtype=np.float32)
-            w = np.array(np.random.random_integers(
-                0, N_options), dtype=np.int32)
+            # w = np.array(np.random.randint(
+            #     0, N_options), dtype=np.int32)
+            w = np.array(0, dtype=np.int32)
 
         # Step the env
         o2, r, d, _ = env.step(a)
@@ -334,6 +339,8 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         if t >= update_after and t % update_every == 0:
             for j in range(update_every):
                 batch = replay_buffer.sample_batch(batch_size)
+                batch['option'] = torch.as_tensor(
+                    batch['option'], dtype=torch.long)
                 update(data=batch)
 
         # End of epoch handling
