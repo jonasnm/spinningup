@@ -277,8 +277,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
                 p_targ.data.add_((1 - polyak) * p.data)
 
     def get_action(o, deterministic=False):
-        w = ac.pi.currOption
-        return ac.act(torch.as_tensor(o, dtype=torch.float32), w,
+        return ac.act(torch.as_tensor(o, dtype=torch.float32),
                       deterministic)
 
     def test_agent():

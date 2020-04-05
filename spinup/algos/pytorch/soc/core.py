@@ -128,7 +128,9 @@ class MLPOptionCritic(nn.Module):
         self.q2 = MLPQuFunction(
             obs_dim, act_dim, N_options, hidden_sizes, activation)
 
-    def act(self, obs, w, deterministic=False):
+    def act(self, obs, w=None, deterministic=False):
+        if w is None:
+            w = self.pi.currOption
         with torch.no_grad():
             w = torch.as_tensor(w, dtype=torch.long)
             a, _ = self.pi(obs, w, deterministic, False)
