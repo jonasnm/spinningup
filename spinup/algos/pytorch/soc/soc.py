@@ -310,7 +310,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             a = np.array(np.random.uniform(-1, 1), dtype=np.float32)
             # w = np.array(np.random.randint(
             #     0, N_options), dtype=np.int32)
-            w = np.array(0, dtype=np.int32)
+            w = np.array(0, dtype=np.long)
 
         # Step the env
         o2, r, d, _ = env.step(a)
