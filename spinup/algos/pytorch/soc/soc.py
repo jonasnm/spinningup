@@ -24,7 +24,7 @@ class ReplayBuffer:
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.options_buf = np.zeros(core.combined_shape(
-            size, 1), dtype=np.int32)
+            size, 1), dtype=np.long)
         self.ptr, self.size, self.max_size = 0, 0, size
 
     def store(self, obs, option, act, rew, next_obs, done):
@@ -165,7 +165,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
     # Create actor-critic module and target networks
     ac = actor_critic(env.observation_space, env.action_space, N_options,
-                      **ac_kwargs)  # TODO: insert N_options
+                      **ac_kwargs)
     ac_targ = deepcopy(ac)
 
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
@@ -187,13 +187,12 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
     # Set up function for computing SAC Q-losses
     def compute_loss_q(data):
-        o, a, w, r, o2, d = data['obs'], data['act'], data['option'], data['rew'], data['obs2'], data['done']
-        w = torch.as_tensor(w, dtype=torch.long)
+        o, w, a, r, o2, d = data['obs'], data['option'], data['act'], data['rew'], data['obs2'], data['done']
+
         # TODO:
         # Qw = ac.Qw(0,w,a)
-        # q1 = ac.q1(o,a,w)
-        q1 = ac.q1(o, a, w)
-        q2 = ac.q2(o, a, w)
+        q1 = ac.q1(o, w, a)
+        q2 = ac.q2(o, w, a)
 
         # Bellman backup for Q functions
         with torch.no_grad():
@@ -201,8 +200,8 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             a2, logp_a2 = ac.pi(o2, w)
 
             # Target Q-values
-            q1_pi_targ = ac_targ.q1(o2, a2, w)
-            q2_pi_targ = ac_targ.q2(o2, a2, w)
+            q1_pi_targ = ac_targ.q1(o2, w, a2)
+            q2_pi_targ = ac_targ.q2(o2, w, a2)
 
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
             backup = r + gamma * (1 - d) * (q_pi_targ - alpha * logp_a2)
@@ -221,9 +220,9 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     # Set up function for computing SAC pi loss
     def compute_loss_pi(data):
         o, w = data['obs'], data['option']
-        pi, logp_pi = ac.pi(o, w)
-        q1_pi = ac.q1(o, pi, w)
-        q2_pi = ac.q2(o, pi, w)
+        pi_action, logp_pi = ac.pi(o, w)
+        q1_pi = ac.q1(o, w, pi_action)
+        q2_pi = ac.q2(o, w, pi_action)
         q_pi = torch.min(q1_pi, q2_pi)
 
         # Entropy-regularized policy loss
@@ -277,8 +276,9 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
                 p_targ.data.mul_(polyak)
                 p_targ.data.add_((1 - polyak) * p.data)
 
-    def get_action(o, w, deterministic=False):
-        return ac.act(torch.as_tensor(o, dtype=torch.float32), torch.as_tensor(w, dtype=torch.long),
+    def get_action(o, deterministic=False):
+        w = ac.pi.currOption
+        return ac.act(torch.as_tensor(o, dtype=torch.float32), w,
                       deterministic)
 
     def test_agent():
@@ -286,7 +286,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
             while not(d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time
-                o, r, d, _ = test_env.step(get_action(o, w, True))
+                o, r, d, _ = test_env.step(get_action(o, True))
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
@@ -303,8 +303,8 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         # from a uniform distribution for better exploration. Afterwards,
         # use the learned policy.
         if t > start_steps:
-            a = get_action(o, w)
-            # w = get_option(o)
+            a = get_action(o)
+            # TODO: w = get_option(o)
         else:
             # env.action_space.sample()
             # TODO: fix for this in the env
@@ -387,7 +387,7 @@ if __name__ == '__main__':
 
     torch.set_num_threads(torch.get_num_threads())
 
-    soc(lambda: gym.make(args.env), actor_critic=core.MLPActorCritic,
+    soc(lambda: gym.make(args.env), actor_critic=core.MLPOptionCritic,
         ac_kwargs=dict(hidden_sizes=[args.hid]*args.l),
         gamma=args.gamma, seed=args.seed, epochs=args.epochs,
         logger_kwargs=logger_kwargs)
