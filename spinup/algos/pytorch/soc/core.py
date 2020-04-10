@@ -59,8 +59,8 @@ class SquashedGaussianSOCActor(nn.Module):
         log_std = self.log_std_layer(net_out)
 
         # Get intra-option policy parameters corresponding to the given option
-        mu = mu.gather(-1, options)
-        log_std = log_std.gather(-1, options)
+        #mu = mu.gather(-1, options)
+        #log_std = log_std.gather(-1, options)
 
         log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
@@ -79,15 +79,15 @@ class SquashedGaussianSOCActor(nn.Module):
             # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             # Try deriving it yourself as a (very difficult) exercise. :)
-            logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
+            logp_pi = pi_distribution.log_prob(pi_action)  # .sum(axis=-1)
             logp_pi -= (2*(np.log(2) - pi_action -
-                           F.softplus(-2*pi_action))).sum(axis=1)
+                           F.softplus(-2*pi_action)))  # .sum(axis=1)
         else:
             logp_pi = None
 
         pi_action = torch.tanh(pi_action)
         # self.act_limit * pi_action #TODO: Change action-space for my env instead. Though OG seems wrong - does not account for the sign of pi_action, e.g. a in [0,500] to range 500*[-1,1] = [-500,500]
-        pi_action = pi_action
+        pi_action = pi_action.gather(-1, options)
 
         return pi_action, logp_pi
 
@@ -103,11 +103,11 @@ class QwFunction(nn.Module):
                 hidden_sizes[-1], N_options),
             nn.Sigmoid())
 
-    def forward(self, obs, act):
+    def forward(self, obs):
         z = self.z(obs)
         Qw = self.Qw(z)
         beta = self.beta(z)
-        return Qw, beta  # Critical to ensure q has right shape.
+        return Qw, beta
 
 
 class MLPOptionCritic(nn.Module):
@@ -127,6 +127,8 @@ class MLPOptionCritic(nn.Module):
             obs_dim, act_dim, N_options, hidden_sizes, activation)
         self.q2 = MLPQuFunction(
             obs_dim, act_dim, N_options, hidden_sizes, activation)
+        self.Qw = QwFunction(obs_dim, act_dim, N_options,
+                             hidden_sizes, activation)
 
     def act(self, obs, w=None, deterministic=False):
         if w is None:
