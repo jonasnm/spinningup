@@ -189,38 +189,54 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     def compute_loss_q(data):
         o, w, a, r, o2, d = data['obs'], data['option'], data['act'], data['rew'], data['obs2'], data['done']
 
-        # TODO:
-        # Qw = ac.Qw(0,w,a)
+        # Get action- and option-values
         q1 = ac.q1(o, w, a)
         q2 = ac.q2(o, w, a)
+        Qw, _ = ac.Qw(o)
+
+        # Get Qw and beta for the given options
+        _, beta_next = ac.Qw(o2)
+        Qw = Qw.gather(-1, w).squeeze(-1)
+        beta_next = beta_next.gather(-1, w).squeeze(-1)
 
         # Bellman backup for Q functions
         with torch.no_grad():
-            # Target actions come from *current* policy
+            # Target actions and corresponding log-probs come from *current* policy
             a2, logp_a2 = ac.pi(o2, w)
 
-            # Target Q-values
-            q1_pi_targ = ac_targ.q1(o2, w, a2)
-            q2_pi_targ = ac_targ.q2(o2, w, a2)
+            # Target Q-values and termination probability beta
+            Qw_next, beta_next_targ = ac_targ.Qw(o2)
+            Qw_next = Qw_next - alpha*logp_a2
+            V_next = Qw_next.max(1).values
 
-            q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
-            backup = r + gamma * (1 - d) * (q_pi_targ - alpha * logp_a2)
+            # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
+            Qw_next = Qw_next.gather(-1, w).squeeze(-1)
+            beta = beta_next_targ.gather(-1, w).squeeze(-1)
+            Aw = (Qw_next - V_next) + 0.01
+
+            target = r + gamma * (1 - d) * ((1-beta) *
+                                            Qw_next + beta*V_next)
 
         # MSE loss against Bellman backup
-        loss_q1 = ((q1 - backup)**2).mean()
-        loss_q2 = ((q2 - backup)**2).mean()
+        loss_Qw = ((Qw - target)**2).mean()
+        loss_beta = (-beta_next*Aw).sum()
+        loss_q1 = ((q1 - target)**2).mean()
+        loss_q2 = ((q2 - target)**2).mean()
         loss_q = loss_q1 + loss_q2
 
         # Useful info for logging
         q_info = dict(Q1Vals=q1.detach().numpy(),
-                      Q2Vals=q2.detach().numpy())
+                      Q2Vals=q2.detach().numpy(),
+                      Qw=Qw.detach().numpy(),
+                      beta=beta_next.detach().numpy())
 
-        return loss_q, q_info
+        return loss_Qw, loss_beta, loss_q, q_info
 
     # Set up function for computing SAC pi loss
     def compute_loss_pi(data):
         o, w = data['obs'], data['option']
         pi_action, logp_pi = ac.pi(o, w)
+        logp_pi = logp_pi.gather(-1, w).squeeze(-1)
         q1_pi = ac.q1(o, w, pi_action)
         q2_pi = ac.q2(o, w, pi_action)
         q_pi = torch.min(q1_pi, q2_pi)
@@ -233,9 +249,11 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
         return loss_pi, pi_info
 
-    # Set up optimizers for policy and q-function
+    # Set up optimizers for policy, q-functions
     pi_optimizer = Adam(ac.pi.parameters(), lr=lr)
     q_optimizer = Adam(q_params, lr=lr)
+    Qw_optimizer = Adam(ac.Qw.parameters(), lr=lr)
+    #beta_optimizer = Adam(ac.Qw.parameters(), lr=lr)
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
@@ -243,12 +261,19 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     def update(data):
         # First run one gradient descent step for Q1 and Q2
         q_optimizer.zero_grad()
-        loss_q, q_info = compute_loss_q(data)
+        Qw_optimizer.zero_grad()
+        loss_Qw, loss_beta, loss_q, q_info = compute_loss_q(data)
         loss_q.backward()
+        loss_Qw.backward()
+        loss_beta.backward()
         q_optimizer.step()
+        Qw_optimizer.step()
+        # beta_optimizer.step()
 
         # Record things
         logger.store(LossQ=loss_q.item(), **q_info)
+        logger.store(LossQw=loss_Qw.item())
+        logger.store(lossBeta=loss_beta.item())
 
         # Freeze Q-networks so you don't waste computational effort
         # computing gradients for them during the policy learning step.
@@ -362,9 +387,12 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             logger.log_tabular('TotalEnvInteracts', t)
             logger.log_tabular('Q1Vals', with_min_and_max=True)
             logger.log_tabular('Q2Vals', with_min_and_max=True)
+            logger.log_tabular('Qw', with_min_and_max=True)
             logger.log_tabular('LogPi', with_min_and_max=True)
             logger.log_tabular('LossPi', average_only=True)
             logger.log_tabular('LossQ', average_only=True)
+            logger.log_tabular('LossQw', with_min_and_max=True)
+            logger.log_tabular('lossBeta')
             logger.log_tabular('Time', time.time()-start_time)
             logger.dump_tabular()
 
