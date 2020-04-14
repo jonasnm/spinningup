@@ -173,7 +173,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         p.requires_grad = False
 
     # List of parameters for both Q-networks (save this for convenience)
-    q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
+    q_params = itertools.chain(ac.q.parameters())
 
     # Experience buffer
     replay_buffer = ReplayBuffer(
@@ -181,17 +181,16 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module)
-                       for module in [ac.pi, ac.q1, ac.q2])
+                       for module in [ac.pi, ac.Qw, ac.q])
     logger.log(
-        '\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n' % var_counts)
+        '\nNumber of parameters: \t pi: %d, \t Qw: %d, \t Qu: %d\n' % var_counts)
 
     # Set up function for computing SAC Q-losses
     def compute_loss_q(data):
         o, w, a, r, o2, d = data['obs'], data['option'], data['act'], data['rew'], data['obs2'], data['done']
 
         # Get action- and option-values
-        q1 = ac.q1(o, w, a)
-        q2 = ac.q2(o, w, a)
+        Qu = ac.q(o, w, a)
         Qw, _ = ac.Qw(o)
 
         # Get Qw and beta for the given options
@@ -219,14 +218,11 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
         # MSE loss against Bellman backup
         loss_Qw = ((Qw - target)**2).mean()
-        loss_beta = (beta_next*Aw).sum()
-        loss_q1 = ((q1 - target)**2).mean()
-        loss_q2 = ((q2 - target)**2).mean()
-        loss_q = loss_q1 + loss_q2
+        loss_beta = (beta_next*Aw).mean()
+        loss_q = ((Qu - target)**2).mean()
 
         # Useful info for logging
-        q_info = dict(Q1Vals=q1.detach().numpy(),
-                      Q2Vals=q2.detach().numpy(),
+        q_info = dict(Qu=Qu.detach().numpy(),
                       Qw=Qw.detach().numpy(),
                       beta=beta_next.detach().numpy())
 
@@ -237,12 +233,10 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         o, w = data['obs'], data['option']
         pi_action, logp_pi = ac.pi(o, w)
         logp_pi = logp_pi.gather(-1, w).squeeze(-1)
-        q1_pi = ac.q1(o, w, pi_action)
-        q2_pi = ac.q2(o, w, pi_action)
-        q_pi = torch.min(q1_pi, q2_pi)
+        Qu_pi = ac.q(o, w, pi_action)
 
         # Entropy-regularized policy loss
-        loss_pi = (alpha * logp_pi - q_pi).mean()
+        loss_pi = (alpha*logp_pi - Qu_pi).mean()
 
         # Useful info for logging
         pi_info = dict(LogPi=logp_pi.detach().numpy())
@@ -271,7 +265,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         beta_optimizer.step()
 
         # Record things
-        logger.store(LossQ=loss_q.item(), **q_info)
+        logger.store(LossQu=loss_q.item(), **q_info)
         logger.store(LossQw=loss_Qw.item())
         logger.store(lossBeta=loss_beta.item())
 
@@ -387,12 +381,11 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             logger.log_tabular('EpLen', average_only=True)
             logger.log_tabular('TestEpLen', average_only=True)
             logger.log_tabular('TotalEnvInteracts', t)
-            logger.log_tabular('Q1Vals', with_min_and_max=True)
-            logger.log_tabular('Q2Vals', with_min_and_max=True)
+            logger.log_tabular('Qu', with_min_and_max=True)
             logger.log_tabular('Qw', with_min_and_max=True)
             logger.log_tabular('LogPi', with_min_and_max=True)
             logger.log_tabular('LossPi', average_only=True)
-            logger.log_tabular('LossQ', average_only=True)
+            logger.log_tabular('LossQu', average_only=True)
             logger.log_tabular('LossQw', with_min_and_max=True)
             logger.log_tabular('lossBeta')
             logger.log_tabular('Time', time.time()-start_time)
@@ -420,4 +413,4 @@ if __name__ == '__main__':
     soc(lambda: gym.make(args.env), actor_critic=core.MLPOptionCritic,
         ac_kwargs=dict(hidden_sizes=[args.hid]*args.l),
         gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-        logger_kwargs=logger_kwargs, eps=eps)
+        logger_kwargs=logger_kwargs, eps=args.eps)

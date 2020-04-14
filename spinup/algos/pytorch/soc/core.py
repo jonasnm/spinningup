@@ -39,7 +39,6 @@ class MLPQuFunction(nn.Module):
 
     def forward(self, obs, option, act):
         q = self.q(torch.cat([obs, act], dim=-1))
-        # torch.squeeze(q, -1)  # Critical to ensure q has right shape.
         return q.gather(-1, option).squeeze(-1)
 
 
@@ -57,10 +56,6 @@ class SquashedGaussianSOCActor(nn.Module):
         net_out = self.net(obs)
         mu = self.mu_layer(net_out)
         log_std = self.log_std_layer(net_out)
-
-        # Get intra-option policy parameters corresponding to the given option
-        #mu = mu.gather(-1, options)
-        #log_std = log_std.gather(-1, options)
 
         log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
@@ -124,9 +119,7 @@ class MLPOptionCritic(nn.Module):
         # build policy and value functions
         self.pi = SquashedGaussianSOCActor(
             obs_dim, act_dim, N_options, hidden_sizes, activation, act_limit)
-        self.q1 = MLPQuFunction(
-            obs_dim, act_dim, N_options, hidden_sizes, activation)
-        self.q2 = MLPQuFunction(
+        self.q = MLPQuFunction(
             obs_dim, act_dim, N_options, hidden_sizes, activation)
         self.Qw = QwFunction(obs_dim, act_dim, N_options,
                              hidden_sizes, activation)
