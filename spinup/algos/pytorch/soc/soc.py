@@ -219,7 +219,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
         # MSE loss against Bellman backup
         loss_Qw = ((Qw - target)**2).mean()
-        loss_beta = (-beta_next*Aw).sum()
+        loss_beta = (beta_next*Aw).sum()
         loss_q1 = ((q1 - target)**2).mean()
         loss_q2 = ((q2 - target)**2).mean()
         loss_q = loss_q1 + loss_q2
