@@ -52,7 +52,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99,
         polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000,
         update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000,
-        logger_kwargs=dict(), save_freq=1, N_options=2):
+        logger_kwargs=dict(), save_freq=1, N_options=2, eps=0.1):
     """
     Soft Option-Critic (SOC)
 
@@ -253,7 +253,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     pi_optimizer = Adam(ac.pi.parameters(), lr=lr)
     q_optimizer = Adam(q_params, lr=lr)
     Qw_optimizer = Adam(ac.Qw.parameters(), lr=lr)
-    #beta_optimizer = Adam(ac.Qw.parameters(), lr=lr)
+    beta_optimizer = Adam(ac.Qw.beta.parameters(), lr=lr)
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
@@ -268,7 +268,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         loss_beta.backward()
         q_optimizer.step()
         Qw_optimizer.step()
-        # beta_optimizer.step()
+        beta_optimizer.step()
 
         # Record things
         logger.store(LossQ=loss_q.item(), **q_info)
@@ -302,6 +302,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
                 p_targ.data.add_((1 - polyak) * p.data)
 
     def get_action(o, deterministic=False):
+        ac.getOption(o)
         return ac.act(torch.as_tensor(o, dtype=torch.float32),
                       deterministic=deterministic)
 
@@ -328,16 +329,15 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         # use the learned policy.
         if t > start_steps:
             a = get_action(o)
-            # TODO: w = get_option(o)
         else:
             # env.action_space.sample()
             # TODO: fix for this in the env
             a = np.array(np.random.uniform(-1, 1), dtype=np.float32)
-            # w = np.array(np.random.randint(
-            #     0, N_options), dtype=np.int32)
-            w = np.array(0, dtype=np.long)
+            ac.pi.currOption = np.array(np.random.randint(
+                0, N_options), dtype=np.int32)
 
         # Step the env
+        w = ac.pi.currOption
         o2, r, d, _ = env.step(a)
         ep_ret += r
         ep_len += 1
@@ -358,6 +358,8 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         if d or (ep_len == max_ep_len):
             logger.store(EpRet=ep_ret, EpLen=ep_len)
             o, ep_ret, ep_len = env.reset(), 0, 0
+            Qw, _ = ac.Qw(torch.as_tensor(o, dtype=torch.float32))
+            ac.pi.currOption = torch.argmax(Qw).numpy()
 
         # Update handling
         if t >= update_after and t % update_every == 0:
@@ -407,6 +409,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--exp_name', type=str, default='soc')
+    parser.add_argument('--eps', type=float, default=0.1)
     args = parser.parse_args()
 
     from spinup.utils.run_utils import setup_logger_kwargs
@@ -417,4 +420,4 @@ if __name__ == '__main__':
     soc(lambda: gym.make(args.env), actor_critic=core.MLPOptionCritic,
         ac_kwargs=dict(hidden_sizes=[args.hid]*args.l),
         gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-        logger_kwargs=logger_kwargs)
+        logger_kwargs=logger_kwargs, eps=eps)

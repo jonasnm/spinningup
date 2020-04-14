@@ -113,12 +113,13 @@ class QwFunction(nn.Module):
 class MLPOptionCritic(nn.Module):
 
     def __init__(self, observation_space, action_space, N_options, hidden_sizes=(256, 256),
-                 activation=nn.ReLU):
+                 activation=nn.ReLU, eps=0.1):
         super().__init__()
 
         obs_dim = observation_space.shape[0]
         act_dim = action_space.shape[0]
         act_limit = action_space.high[0]
+        self.eps = eps
 
         # build policy and value functions
         self.pi = SquashedGaussianSOCActor(
@@ -138,3 +139,21 @@ class MLPOptionCritic(nn.Module):
             a, _ = self.pi(obs, w, deterministic, False)
             #TODO: getOption(obs, w, deterministic)
             return a.numpy()
+
+    def getOption(self, obs):
+        w = self.pi.currOption
+        obs = torch.as_tensor(obs, dtype=torch.float32)
+        Qw, beta = self.Qw(obs)
+        # keep current option with probability 1-beta_w
+        if (1-beta[w]) > np.random.rand():
+            option = w
+
+        # else get new option
+        else:
+            N_options = len(beta)
+            if np.random.rand() > self.eps:
+                option = np.argmax(Qw[w].detach().numpy())
+            else:
+                option = np.random.choice(np.arange(N_options))
+        self.pi.currOption = option
+        return option
