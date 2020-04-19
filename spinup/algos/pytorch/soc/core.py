@@ -145,7 +145,7 @@ class MLPOptionCritic(nn.Module):
         else:
             N_options = len(beta)
             if np.random.rand() > self.eps:
-                option = np.argmax(Qw[w].detach().numpy())
+                option = np.argmax(Qw.detach().numpy())
             else:
                 option = np.random.choice(np.arange(N_options))
         self.pi.currOption = option
