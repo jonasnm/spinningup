@@ -91,16 +91,30 @@ class QwFunction(nn.Module):
 
     def __init__(self, obs_dim, act_dim, N_options, hidden_sizes, activation):
         super().__init__()
-        self.z = mlp([obs_dim] + list(hidden_sizes), activation, activation)
-        self.Qw = nn.Linear(hidden_sizes[-1], N_options)
+        self.z = mlp([obs_dim] + list(hidden_sizes[:-1]),
+                     activation, activation)
+        # self.Qw1 = nn.Sequential(nn.Linear(
+        #     hidden_sizes[-2], hidden_sizes[-1]//N_options),
+        #     activation(),
+        #     nn.Linear(hidden_sizes[-1]//N_options, N_options)
+        # )
+        self.Qw1 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 1]),
+                       activation)
+        self.Qw2 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 1]),
+                       activation)
+        # self.Qw3 = [mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 2]),
+        #                activation) for i in range(N_options)]
+
         self.beta = nn.Sequential(
             nn.Linear(
-                hidden_sizes[-1], N_options),
+                hidden_sizes[-2], N_options),
             nn.Sigmoid())
 
     def forward(self, obs):
         z = self.z(obs)
-        Qw = self.Qw(z)
+        Qw1 = self.Qw1(z)
+        Qw2 = self.Qw2(z)
+        Qw = torch.cat([Qw1, Qw2], dim=-1)
         beta = self.beta(z)
         return Qw, beta
 
