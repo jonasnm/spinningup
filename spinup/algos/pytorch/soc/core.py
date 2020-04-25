@@ -46,16 +46,30 @@ class SquashedGaussianSOCActor(nn.Module):
 
     def __init__(self, obs_dim, act_dim, N_options, hidden_sizes, activation, act_limit):
         super().__init__()
-        self.net = mlp([obs_dim] + list(hidden_sizes), activation, activation)
-        self.mu_layer = nn.Linear(hidden_sizes[-1], N_options*act_dim)
-        self.log_std_layer = nn.Linear(hidden_sizes[-1], N_options*act_dim)
+        self.net = mlp([obs_dim] + list(hidden_sizes[:-1]),
+                       activation, activation)
+        self.w1 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 2]),
+                      activation)
+        self.w2 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 2]),
+                      activation)
+        self.log_std_layer = nn.Sigmoid()
         self.act_limit = act_limit
         self.currOption = np.array(0, dtype=np.long)
 
     def forward(self, obs, options, deterministic=False, with_logprob=True):
         net_out = self.net(obs)
-        mu = self.mu_layer(net_out)
-        log_std = self.log_std_layer(net_out)
+        w1 = self.w1(net_out)
+        w2 = self.w2(net_out)
+
+        # Reshape and collect mean and std
+        #X = torch.cat((w1.unsqueeze(-1), w2.unsqueeze(-1)), dim=-1)
+        X = torch.cat((w1, w2), dim=-1)
+        M = X.view(-1, 2, 2)
+        mu = M[:, :, 0]
+        log_std = M[:, :, 1]
+
+        #oo = w1.gather(-1, torch.zeros((100,1),dtype=torch.long))
+        #oo = w1.gather(-1, torch.ones((100,1),dtype=torch.long))
 
         log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
@@ -80,7 +94,7 @@ class SquashedGaussianSOCActor(nn.Module):
         else:
             logp_pi = None
 
-        pi_action = torch.tanh(pi_action)
+        pi_action = torch.tanh(pi_action).squeeze(0)
         # self.act_limit * pi_action #TODO: Change action-space for my env instead. Though OG seems wrong - does not account for the sign of pi_action, e.g. a in [0,500] to range 500*[-1,1] = [-500,500]
         pi_action = pi_action.gather(-1, options)
 
@@ -144,7 +158,7 @@ class MLPOptionCritic(nn.Module):
         with torch.no_grad():
             w = torch.as_tensor(w, dtype=torch.long)
             a, _ = self.pi(obs, w, deterministic, False)
-            #TODO: getOption(obs, w, deterministic)
+            # TODO: getOption(obs, w, deterministic)
             return a.numpy()
 
     def getOption(self, obs):
