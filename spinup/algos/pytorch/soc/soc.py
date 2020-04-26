@@ -194,7 +194,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         Qw, _ = ac.Qw(o)
 
         # Get Qw and beta for the given options
-        Qw_next, beta_next = ac.Qw(o2)
+        _, beta_next = ac.Qw(o2)
         Qw = Qw.gather(-1, w).squeeze(-1)
         beta_next = beta_next.gather(-1, w).squeeze(-1)
 
@@ -204,10 +204,9 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             a2, logp_a2 = ac.pi(o2, w)
 
             # Target Q-values and termination probability beta
-            Qw_next_targ, beta_next_targ = ac_targ.Qw(o2)
-            Qw_next_targ = Qw_next_targ - alpha*logp_a2
-            W = Qw_next.argmax(1).unsqueeze(-1)
-            V_next = Qw_next_targ.gather(-1, W)
+            Qw_next, beta_next_targ = ac_targ.Qw(o2)
+            Qw_next = Qw_next - alpha*logp_a2
+            V_next = Qw_next.max(1).values
 
             # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
             Qw_next = Qw_next.gather(-1, w).squeeze(-1)
