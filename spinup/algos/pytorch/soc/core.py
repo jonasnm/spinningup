@@ -34,12 +34,20 @@ class MLPQuFunction(nn.Module):
 
     def __init__(self, obs_dim, act_dim, N_options, hidden_sizes, activation):
         super().__init__()
-        self.q = mlp([obs_dim + act_dim] +
-                     list(hidden_sizes) + [N_options], activation)
+        self.z = mlp([obs_dim + act_dim] +
+                     list(hidden_sizes[:-1]), activation, activation)
+        self.Qu1 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 1]),
+                       activation)
+        self.Qu2 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 1]),
+                       activation)
 
     def forward(self, obs, option, act):
-        q = self.q(torch.cat([obs, act], dim=-1))
-        return q.gather(-1, option).squeeze(-1)
+        z = self.z(torch.cat([obs, act], dim=-1))
+        Qu1 = self.Qu1(z)
+        Qu2 = self.Qu2(z)
+
+        Qu = torch.cat([Qu1, Qu2], dim=-1)
+        return Qu.gather(-1, option).squeeze(-1)
 
 
 class SquashedGaussianSOCActor(nn.Module):
