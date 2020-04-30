@@ -254,6 +254,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
     def update(data):
         # First run one gradient descent step for Q1 and Q2
+        beta_optimizer.zero_grad()
         q_optimizer.zero_grad()
         Qw_optimizer.zero_grad()
         loss_Qw, loss_beta, loss_q, q_info = compute_loss_q(data)
