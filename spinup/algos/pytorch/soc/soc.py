@@ -211,7 +211,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
             Qw_next = Qw_next.gather(-1, w).squeeze(-1)
             beta = beta_next_targ.gather(-1, w).squeeze(-1)
-            Aw = (Qw_next - V_next) + 0.01
+            Aw = (Qw_next - V_next) + c
 
             target = r + gamma * (1 - d) * ((1-beta) *
                                             Qw_next + beta*V_next)
@@ -314,6 +314,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     o, ep_ret, ep_len = env.reset(), 0, 0
+    c = 0.01
 
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
@@ -322,20 +323,22 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         # from a uniform distribution for better exploration. Afterwards,
         # use the learned policy.
         if t > start_steps:
+            w = ac.pi.currOption
             a = get_action(o)
         else:
-            # env.action_space.sample()
-            # TODO: fix for this in the env
-            #a = np.array(np.random.uniform(-1, 1), dtype=np.float32)
+            w = ac.pi.currOption
             ac.pi.currOption = np.array(np.random.randint(
                 0, N_options), dtype=np.int32)
             a = ac.act(torch.as_tensor(o, dtype=torch.float32))
 
         # Step the env
-        w = ac.pi.currOption
         o2, r, d, _ = env.step(a)
         ep_ret += r
         ep_len += 1
+
+        # Deliberation cost
+        r_tilde = r + (w == ac.pi.currOption)*c
+        w = ac.pi.currOption
 
         # Ignore the "done" signal if it comes from hitting the time
         # horizon (that is, when it's an artificial terminal signal
@@ -343,7 +346,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         d = False if ep_len == max_ep_len else d
 
         # Store experience to replay buffer
-        replay_buffer.store(o, w, a, r, o2, d)
+        replay_buffer.store(o, w, a, r_tilde, o2, d)
 
         # Super critical, easy to overlook step: make sure to update
         # most recent observation!
