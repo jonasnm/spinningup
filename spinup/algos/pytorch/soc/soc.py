@@ -326,9 +326,10 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         else:
             # env.action_space.sample()
             # TODO: fix for this in the env
-            a = np.array(np.random.uniform(-1, 1), dtype=np.float32)
+            #a = np.array(np.random.uniform(-1, 1), dtype=np.float32)
             ac.pi.currOption = np.array(np.random.randint(
                 0, N_options), dtype=np.int32)
+            a = ac.act(torch.as_tensor(o, dtype=torch.float32))
 
         # Step the env
         w = ac.pi.currOption
