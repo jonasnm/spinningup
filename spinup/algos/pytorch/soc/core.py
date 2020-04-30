@@ -49,8 +49,17 @@ class SquashedGaussianSOCActor(nn.Module):
         self.net = mlp([obs_dim] + list(hidden_sizes), activation, activation)
         self.mu_layer = nn.Linear(hidden_sizes[-1], N_options*act_dim)
         self.log_std_layer = nn.Linear(hidden_sizes[-1], N_options*act_dim)
+        self.beta = nn.Sequential(
+            nn.Linear(
+                hidden_sizes[-1], N_options),
+            nn.Sigmoid())
         self.act_limit = act_limit
         self.currOption = np.array(0, dtype=np.long)
+
+    def getBeta(self, obs):
+        net_out = self.net(obs)
+        beta = self.beta(net_out)
+        return beta
 
     def forward(self, obs, options, deterministic=False, with_logprob=True):
         net_out = self.net(obs)
@@ -93,16 +102,11 @@ class QwFunction(nn.Module):
         super().__init__()
         self.z = mlp([obs_dim] + list(hidden_sizes), activation, activation)
         self.Qw = nn.Linear(hidden_sizes[-1], N_options)
-        self.beta = nn.Sequential(
-            nn.Linear(
-                hidden_sizes[-1], N_options),
-            nn.Sigmoid())
 
     def forward(self, obs):
         z = self.z(obs)
         Qw = self.Qw(z)
-        beta = self.beta(z)
-        return Qw, beta
+        return Qw
 
 
 class MLPOptionCritic(nn.Module):
@@ -130,13 +134,12 @@ class MLPOptionCritic(nn.Module):
         with torch.no_grad():
             w = torch.as_tensor(w, dtype=torch.long)
             a, _ = self.pi(obs, w, deterministic, False)
-            #TODO: getOption(obs, w, deterministic)
             return a.numpy()
 
     def getOption(self, obs):
         w = self.pi.currOption
         obs = torch.as_tensor(obs, dtype=torch.float32)
-        Qw, beta = self.Qw(obs)
+        beta = self.pi.getBeta(obs)
         # keep current option with probability 1-beta_w
         if (1-beta[w]) > np.random.rand():
             option = w
@@ -145,6 +148,7 @@ class MLPOptionCritic(nn.Module):
         else:
             N_options = len(beta)
             if np.random.rand() > self.eps:
+                Qw = self.Qw(obs)
                 option = np.argmax(Qw.detach().numpy())
             else:
                 option = np.random.choice(np.arange(N_options))
