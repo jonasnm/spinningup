@@ -242,12 +242,12 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         with torch.no_grad():
             Qw_next = ac.Qw(o2)
             V_next = Qw_next.max(-1).values
-            Qw_next = Qw_next.gather(-1, w)
+            Qw_next = Qw_next.gather(-1, w).squeeze(-1)
             Aw = (Qw_next - V_next) + c
 
         # Termination loss
         beta_next = ac.pi.getBeta(o2)
-        beta_next = beta_next.gather(-1, w)
+        beta_next = beta_next.gather(-1, w).squeeze(-1)
         loss_beta = (beta_next*Aw).mean()
 
         # Useful info for logging
