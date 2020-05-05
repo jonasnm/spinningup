@@ -340,9 +340,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             a = get_action(o)
         else:
             w = ac.pi.currOption
-            ac.pi.currOption = np.array(np.random.randint(
-                0, N_options), dtype=np.int32)
-            a = ac.act(torch.as_tensor(o, dtype=torch.float32))
+            a = get_action(o)
 
         # Step the env
         o2, r, d, _ = env.step(a)
