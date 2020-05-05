@@ -120,16 +120,24 @@ class QwFunction(nn.Module):
         super().__init__()
         self.z = mlp([obs_dim] + list(hidden_sizes[:-1]),
                      activation, activation)
-        self.Qw1 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 1]),
-                       activation)
-        self.Qw2 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 1]),
-                       activation)
+        self.V_stream = mlp([hidden_sizes[-2]] +
+                            list([hidden_sizes[-1], 1]), activation)
+        self.A1_stream = mlp([hidden_sizes[-2]] +
+                             list([hidden_sizes[-1]//N_options, 1]), activation)
+        self.A2_stream = mlp([hidden_sizes[-2]] +
+                             list([hidden_sizes[-1]//N_options, 1]), activation)
 
     def forward(self, obs):
+        # feature representation in code space
         z = self.z(obs)
-        Qw1 = self.Qw1(z)
-        Qw2 = self.Qw2(z)
-        Qw = torch.cat([Qw1, Qw2], dim=-1)
+
+        # Value- and advantage stream
+        V = self.V_stream(z)
+        A1 = self.A1_stream(z)
+        A2 = self.A2_stream(z)
+        A = torch.cat([A1, A2], dim=-1)
+        A_tilde = A - A.mean(dim=-1).unsqueeze_(-1)
+        Qw = V - A_tilde
         return Qw
 
 
