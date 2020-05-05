@@ -60,9 +60,17 @@ class SquashedGaussianSOCActor(nn.Module):
                       activation)
         self.w2 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 2]),
                       activation)
-        self.log_std_layer = nn.Sigmoid()
+        self.beta = nn.Sequential(
+            nn.Linear(
+                hidden_sizes[-2], N_options),
+            nn.Sigmoid())
         self.act_limit = act_limit
         self.currOption = np.array(0, dtype=np.long)
+
+    def getBeta(self, obs):
+        net_out = self.net(obs)
+        beta = self.beta(net_out)
+        return beta
 
     def forward(self, obs, options, deterministic=False, with_logprob=True):
         net_out = self.net(obs)
@@ -75,9 +83,6 @@ class SquashedGaussianSOCActor(nn.Module):
         M = X.view(-1, 2, 2)
         mu = M[:, :, 0]
         log_std = M[:, :, 1]
-
-        #oo = w1.gather(-1, torch.zeros((100,1),dtype=torch.long))
-        #oo = w1.gather(-1, torch.ones((100,1),dtype=torch.long))
 
         log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
@@ -115,30 +120,17 @@ class QwFunction(nn.Module):
         super().__init__()
         self.z = mlp([obs_dim] + list(hidden_sizes[:-1]),
                      activation, activation)
-        # self.Qw1 = nn.Sequential(nn.Linear(
-        #     hidden_sizes[-2], hidden_sizes[-1]//N_options),
-        #     activation(),
-        #     nn.Linear(hidden_sizes[-1]//N_options, N_options)
-        # )
         self.Qw1 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 1]),
                        activation)
         self.Qw2 = mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 1]),
                        activation)
-        # self.Qw3 = [mlp([hidden_sizes[-2]] + list([hidden_sizes[-1]//N_options, 2]),
-        #                activation) for i in range(N_options)]
-
-        self.beta = nn.Sequential(
-            nn.Linear(
-                hidden_sizes[-2], N_options),
-            nn.Sigmoid())
 
     def forward(self, obs):
         z = self.z(obs)
         Qw1 = self.Qw1(z)
         Qw2 = self.Qw2(z)
         Qw = torch.cat([Qw1, Qw2], dim=-1)
-        beta = self.beta(z)
-        return Qw, beta
+        return Qw
 
 
 class MLPOptionCritic(nn.Module):
@@ -166,13 +158,12 @@ class MLPOptionCritic(nn.Module):
         with torch.no_grad():
             w = torch.as_tensor(w, dtype=torch.long)
             a, _ = self.pi(obs, w, deterministic, False)
-            # TODO: getOption(obs, w, deterministic)
             return a.numpy()
 
     def getOption(self, obs):
         w = self.pi.currOption
         obs = torch.as_tensor(obs, dtype=torch.float32)
-        Qw, beta = self.Qw(obs)
+        beta = self.pi.getBeta(obs)
         # keep current option with probability 1-beta_w
         if (1-beta[w]) > np.random.rand():
             option = w
@@ -181,6 +172,7 @@ class MLPOptionCritic(nn.Module):
         else:
             N_options = len(beta)
             if np.random.rand() > self.eps:
+                Qw = self.Qw(obs)
                 option = np.argmax(Qw.detach().numpy())
             else:
                 option = np.random.choice(np.arange(N_options))
