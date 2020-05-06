@@ -137,7 +137,7 @@ class QwFunction(nn.Module):
         A2 = self.A2_stream(z)
         A = torch.cat([A1, A2], dim=-1)
         A_tilde = A - A.mean(dim=-1).unsqueeze_(-1)
-        Qw = V - A_tilde
+        Qw = V + A_tilde
         return Qw
 
 
