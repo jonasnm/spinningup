@@ -54,7 +54,9 @@ class SquashedGaussianSOCActor(nn.Module):
                 hidden_sizes[-1], N_options),
             nn.Sigmoid())
         self.act_limit = act_limit
+        self.act_dim = act_dim
         self.currOption = np.array(0, dtype=np.long)
+        self.N_options = N_options
 
     def getBeta(self, obs):
         net_out = self.net(obs)
@@ -63,8 +65,10 @@ class SquashedGaussianSOCActor(nn.Module):
 
     def forward(self, obs, options, deterministic=False, with_logprob=True):
         net_out = self.net(obs)
-        mu = self.mu_layer(net_out)
-        log_std = self.log_std_layer(net_out)
+        z_mu = self.mu_layer(net_out)
+        z_log_std = self.log_std_layer(net_out)
+        mu = z_mu.view(-1, self.act_dim, self.N_options)
+        log_std = z_log_std.view(-1, self.act_dim, self.N_options)
 
         log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
@@ -83,15 +87,19 @@ class SquashedGaussianSOCActor(nn.Module):
             # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             # Try deriving it yourself as a (very difficult) exercise. :)
-            logp_pi = pi_distribution.log_prob(pi_action)  # .sum(axis=-1)
+
+            # get log-probs, sum over action dimension
+            logp_pi = pi_distribution.log_prob(pi_action)
             logp_pi -= (2*(np.log(2) - pi_action -
-                           F.softplus(-2*pi_action)))  # .sum(axis=1)
+                           F.softplus(-2*pi_action)))
+            logp_pi = logp_pi.sum(dim=1)
         else:
             logp_pi = None
 
         pi_action = torch.tanh(pi_action)
-        # self.act_limit * pi_action #TODO: Change action-space for my env instead. Though OG seems wrong - does not account for the sign of pi_action, e.g. a in [0,500] to range 500*[-1,1] = [-500,500]
-        pi_action = pi_action.gather(-1, options)
+        pi_action = self.act_limit * pi_action
+        options = options.repeat(1, self.act_dim).view(-1, self.act_dim, 1)
+        pi_action = pi_action.gather(-1, options).squeeze(0).squeeze(-1)
 
         return pi_action, logp_pi
 

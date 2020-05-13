@@ -212,7 +212,6 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
             # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
             Qw_next = Qw_next.gather(-1, w).squeeze(-1)
-            Aw = (Qw_next - V_next) + c
 
             target = r + gamma * (1 - d) * ((1-beta_next) *
                                             Qw_next + beta_next*V_next)
@@ -327,7 +326,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     o, ep_ret, ep_len = env.reset(), 0, 0
-    c = 0.01
+    c = 0.07
 
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
