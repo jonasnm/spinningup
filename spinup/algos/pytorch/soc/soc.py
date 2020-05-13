@@ -207,18 +207,22 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
             # Target Q-values and termination probability beta
             Qw_next = ac_targ.Qw(o2)
-            Qw_next = Qw_next - alpha*logp_a2
+            Qw_next_intra = Qw_next - alpha*logp_a2
             V_next = Qw_next.max(1).values
+            V_next_intra = Qw_next_intra.max(1).values
 
             # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
             Qw_next = Qw_next.gather(-1, w).squeeze(-1)
+            Qw_next_intra = Qw_next_intra.gather(-1, w).squeeze(-1)
 
-            target = r + gamma * (1 - d) * ((1-beta_next) *
-                                            Qw_next + beta_next*V_next)
+            target_Qw = r + gamma * (1 - d) * ((1-beta_next) *
+                                               Qw_next + beta_next*V_next)
+            target_Qu = r + gamma * (1 - d) * ((1-beta_next) *
+                                               Qw_next_intra + beta_next*V_next_intra)
 
         # MSE loss against Bellman backup
-        loss_Qw = ((Qw - target)**2).mean()
-        loss_q = ((Qu - target)**2).mean()
+        loss_Qw = ((Qw - target_Qw)**2).mean()
+        loss_q = ((Qu - target_Qu)**2).mean()
 
         # Useful info for logging
         q_info = dict(Qu=Qu.detach().numpy(),
