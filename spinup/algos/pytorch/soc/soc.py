@@ -245,8 +245,8 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         with torch.no_grad():
             PiO_probs = ac.getOption(o2, ChangeOption=False)
             Qw_next = ac.Qw(o2)
-            Qw_next = Qw_next.gather(-1, w).squeeze(-1)
             V_next = (PiO_probs*Qw_next).sum(-1)
+            Qw_next = Qw_next.gather(-1, w).squeeze(-1)
             Aw = (Qw_next - V_next) + c
 
         # Termination loss
