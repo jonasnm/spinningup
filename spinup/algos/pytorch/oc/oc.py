@@ -1,4 +1,5 @@
 import numpy as np
+from copy import deepcopy
 import torch
 from torch.optim import Adam
 import gym
@@ -95,7 +96,7 @@ class VPGBuffer:
 
 def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         steps_per_epoch=4000, epochs=50, gamma=0.99, pi_lr=3e-4,
-        vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000, N_options=2, c=0.07,
+        vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000, N_options=2, c=0.07, polyak=0.995,
         logger_kwargs=dict(), save_freq=10):
     """
     Vanilla Policy Gradient 
@@ -182,6 +183,16 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         save_freq (int): How often (in terms of gap between epochs) to save
             the current policy and value function.
 
+        polyak (float): Interpolation factor in polyak averaging for target 
+            networks. Target networks are updated towards main networks 
+            according to:
+
+            .. math:: \\theta_{\\text{targ}} \\leftarrow 
+                \\rho \\theta_{\\text{targ}} + (1-\\rho) \\theta
+
+            where :math:`\\rho` is polyak. (Always between 0 and 1, usually 
+            close to 1.)
+
     """
 
     # Special function to avoid certain slowdowns from PyTorch + MPI combo.
@@ -204,6 +215,11 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     # Create actor-critic module
     ac = actor_critic(env.observation_space,
                       env.action_space, N_options, **ac_kwargs)
+    ac_targ = deepcopy(ac)
+
+    # Freeze target networks with respect to optimizers (only update via polyak averaging)
+    for p in ac_targ.parameters():
+        p.requires_grad = False
 
     # Sync params across processes
     sync_params(ac)
@@ -216,6 +232,12 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
     buf = VPGBuffer(obs_dim, act_dim, N_options,
                     local_steps_per_epoch, gamma, lam)
+
+    # function for option- and action selection
+    def get_action(o, deterministic=False):
+        ac.getOption(o)
+        return ac.act(torch.as_tensor(o, dtype=torch.float32),
+                      deterministic=deterministic)
 
     # Set up function for computing critic loss
 
@@ -238,7 +260,7 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             beta_next = beta_next.gather(-1, w).squeeze(-1)
 
             # Target Q-values and termination probability beta
-            Qw_next = ac.Qw(o2)
+            Qw_next = ac_targ.Qw(o2)
             V_next = Qw_next.max(1).values
 
             # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
@@ -307,6 +329,14 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         mpi_avg_grads(ac.pi)    # average grads across MPI processes
         pi_optimizer.step()
         beta_optimizer.step()
+
+        # Finally, update target networks by polyak averaging.
+        with torch.no_grad():
+            for p, p_targ in zip(ac.parameters(), ac_targ.parameters()):
+                # NB: We use an in-place operations "mul_", "add_" to update target
+                # params, as opposed to "mul" and "add", which would make new tensors.
+                p_targ.data.mul_(polyak)
+                p_targ.data.add_((1 - polyak) * p.data)
 
         # Log changes from update
         #ent = pi_info_old['ent']
