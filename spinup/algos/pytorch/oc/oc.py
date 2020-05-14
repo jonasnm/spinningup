@@ -16,8 +16,10 @@ class VPGBuffer:
     for calculating the advantages of state-action pairs.
     """
 
-    def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
+    def __init__(self, obs_dim, act_dim, N_options, size, gamma=0.99, lam=0.95):
         self.obs_buf = np.zeros(core.combined_shape(
+            size, obs_dim), dtype=np.float32)
+        self.obs2_buf = np.zeros(core.combined_shape(
             size, obs_dim), dtype=np.float32)
         self.act_buf = np.zeros(core.combined_shape(
             size, act_dim), dtype=np.float32)
@@ -25,11 +27,11 @@ class VPGBuffer:
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.ret_buf = np.zeros(size, dtype=np.float32)
         self.val_buf = np.zeros(size, dtype=np.float32)
-        self.logp_buf = np.zeros(size, dtype=np.float32)
+        self.options_buf = np.zeros(size, dtype=np.long)
         self.gamma, self.lam = gamma, lam
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
-    def store(self, obs, act, rew, val, logp):
+    def store(self, obs, act, rew, obs2, options, val):
         """
         Append one timestep of agent-environment interaction to the buffer.
         """
@@ -37,8 +39,9 @@ class VPGBuffer:
         self.obs_buf[self.ptr] = obs
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
+        self.obs2_buf[self.ptr] = obs2
+        self.options_buf[self.ptr] = options
         self.val_buf[self.ptr] = val
-        self.logp_buf[self.ptr] = logp
         self.ptr += 1
 
     def finish_path(self, last_val=0):
@@ -83,13 +86,13 @@ class VPGBuffer:
         adv_mean, adv_std = mpi_statistics_scalar(self.adv_buf)
         self.adv_buf = (self.adv_buf - adv_mean) / adv_std
         data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf,
-                    adv=self.adv_buf, logp=self.logp_buf)
+                    adv=self.adv_buf, obs2=self.obs2_buf, options=self.options_buf)
         return {k: torch.as_tensor(v, dtype=torch.float32) for k, v in data.items()}
 
 
-def oc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
+def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(),  seed=0,
         steps_per_epoch=4000, epochs=50, gamma=0.99, pi_lr=3e-4,
-        vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000,
+        vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000, N_options=2,
         logger_kwargs=dict(), save_freq=10):
     """
     Vanilla Policy Gradient 
@@ -196,7 +199,8 @@ def oc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
     act_dim = env.action_space.shape
 
     # Create actor-critic module
-    ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
+    ac = actor_critic(env.observation_space,
+                      env.action_space, N_options, **ac_kwargs)
 
     # Sync params across processes
     sync_params(ac)
@@ -207,27 +211,29 @@ def oc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
     # Set up experience buffer
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
-    buf = VPGBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma, lam)
+    buf = VPGBuffer(obs_dim, act_dim, N_options,
+                    local_steps_per_epoch, gamma, lam)
 
     # Set up function for computing VPG policy loss
     def compute_loss_pi(data):
-        obs, act, adv, logp_old = data['obs'], data['act'], data['adv'], data['logp']
+        obs, act, w, adv = data['obs'], data['act'], data['options'], data['adv']
 
         # Policy loss
-        pi, logp = ac.pi(obs, act)
+        a, logp = ac.pi(obs, w)
+        pi = ac.pi._distribution(obs, w)
         loss_pi = -(logp * adv).mean()
 
         # Useful extra info
-        approx_kl = (logp_old - logp).mean().item()
         ent = pi.entropy().mean().item()
-        pi_info = dict(kl=approx_kl, ent=ent)
+        pi_info = dict(ent=ent)
 
         return loss_pi, pi_info
 
     # Set up function for computing value loss
     def compute_loss_v(data):
         obs, ret = data['obs'], data['ret']
-        return ((ac.v(obs) - ret)**2).mean()
+        lossFun = torch.nn.MSELoss()
+        return lossFun(ac.v(obs), ret)
 
     # Set up optimizers for policy and value function
     pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
@@ -238,18 +244,13 @@ def oc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
     def update():
         data = buf.get()
+        data['options'] = torch.as_tensor(
+            data['options'], dtype=torch.long)
 
         # Get loss and info values before update
         pi_l_old, pi_info_old = compute_loss_pi(data)
         pi_l_old = pi_l_old.item()
         v_l_old = compute_loss_v(data).item()
-
-        # Train policy with a single step of gradient descent
-        pi_optimizer.zero_grad()
-        loss_pi, pi_info = compute_loss_pi(data)
-        loss_pi.backward()
-        mpi_avg_grads(ac.pi)    # average grads across MPI processes
-        pi_optimizer.step()
 
         # Value function learning
         for i in range(train_v_iters):
@@ -259,10 +260,17 @@ def oc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             mpi_avg_grads(ac.v)    # average grads across MPI processes
             vf_optimizer.step()
 
+        # Train policy with a single step of gradient descent
+        pi_optimizer.zero_grad()
+        loss_pi, pi_info = compute_loss_pi(data)
+        loss_pi.backward()
+        mpi_avg_grads(ac.pi)    # average grads across MPI processes
+        pi_optimizer.step()
+
         # Log changes from update
-        kl, ent = pi_info['kl'], pi_info_old['ent']
+        ent = pi_info_old['ent']
         logger.store(LossPi=pi_l_old, LossV=v_l_old,
-                     KL=kl, Entropy=ent,
+                     Entropy=ent,
                      DeltaLossPi=(loss_pi.item() - pi_l_old),
                      DeltaLossV=(loss_v.item() - v_l_old))
 
@@ -272,19 +280,23 @@ def oc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
+        w = torch.as_tensor(ac.pi.currOption, dtype=torch.long)
         for t in range(local_steps_per_epoch):
-            a, v, logp = ac.step(torch.as_tensor(o, dtype=torch.float32))
+            a = ac.act(torch.as_tensor(
+                o, dtype=torch.float32))
+            v = ac.v(torch.as_tensor(
+                o, dtype=torch.float32))
 
-            next_o, r, d, _ = env.step(a)
+            o2, r, d, _ = env.step(a)
             ep_ret += r
             ep_len += 1
 
             # save and log
-            buf.store(o, a, r, v, logp)
+            buf.store(o, a, r, o2, w, v)
             logger.store(VVals=v)
 
             # Update obs (critical!)
-            o = next_o
+            o = o2
 
             timeout = ep_len == max_ep_len
             terminal = d or timeout
@@ -296,7 +308,8 @@ def oc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                           ep_len, flush=True)
                 # if trajectory didn't reach terminal state, bootstrap value target
                 if timeout or epoch_ended:
-                    _, v, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
+                    v = ac.v(torch.as_tensor(
+                        o, dtype=torch.float32)).detach().numpy()
                 else:
                     v = 0
                 buf.finish_path(v)
@@ -323,7 +336,6 @@ def oc(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('DeltaLossPi', average_only=True)
         logger.log_tabular('DeltaLossV', average_only=True)
         logger.log_tabular('Entropy', average_only=True)
-        logger.log_tabular('KL', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
 
@@ -347,7 +359,7 @@ if __name__ == '__main__':
     from spinup.utils.run_utils import setup_logger_kwargs
     logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed)
 
-    vpg(lambda: gym.make(args.env), actor_critic=core.MLPActorCritic,
+    oc(lambda: gym.make(args.env), actor_critic=core.MLPOptionCritic,
         ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), gamma=args.gamma,
         seed=args.seed, steps_per_epoch=args.steps, epochs=args.epochs,
         logger_kwargs=logger_kwargs)
