@@ -91,11 +91,12 @@ class MLPCritic(nn.Module):
 
 class MLPOptionCritic(nn.Module):
     def __init__(self, observation_space, action_space, N_options,
-                 hidden_sizes=(64, 64), activation=nn.Tanh):
+                 hidden_sizes=(64, 64), activation=nn.Tanh, eps=0.1):
         super().__init__()
 
         obs_dim = observation_space.shape[0]
         act_dim = action_space.shape[0]
+        self.eps = eps
 
         # policy builder depends on action space
         if isinstance(action_space, Box):
@@ -126,6 +127,24 @@ class MLPOptionCritic(nn.Module):
 
     # def act(self, obs):
     #     return self.step(obs)[0]
+    def getOption(self, obs):
+        w = self.pi.currOption
+        obs = torch.as_tensor(obs, dtype=torch.float32)
+        beta = self.pi.getBeta(obs)
+        # keep current option with probability 1-beta_w
+        if (1-beta[w]) > np.random.rand():
+            option = w
+
+        # else get new option
+        else:
+            N_options = len(beta)
+            if np.random.rand() > self.eps:
+                Qw = self.Qw(obs)
+                option = np.argmax(Qw.detach().numpy())
+            else:
+                option = np.random.choice(np.arange(N_options))
+        self.pi.currOption = option
+        return option
 
 
 class QwFunction(nn.Module):

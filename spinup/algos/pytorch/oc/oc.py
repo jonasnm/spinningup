@@ -319,11 +319,13 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
         for t in range(local_steps_per_epoch):
-            w = torch.as_tensor(ac.pi.currOption, dtype=torch.long)
-            a = ac.act(torch.as_tensor(
-                o, dtype=torch.float32))
+            # w = torch.as_tensor(ac.pi.currOption, dtype=torch.long)
+            # a = ac.act(torch.as_tensor(
+            #     o, dtype=torch.float32))
+            a = get_action(o)
             Qw = ac.Qw(torch.as_tensor(
                 o, dtype=torch.float32))
+            w = torch.as_tensor(ac.pi.currOption, dtype=torch.long)
             Qw = Qw.gather(-1, w).squeeze(-1)
 
             o2, r, d, _ = env.step(a)
@@ -357,6 +359,10 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
                     # only save EpRet / EpLen if trajectory finished
                     logger.store(EpRet=ep_ret, EpLen=ep_len)
                 o, ep_ret, ep_len = env.reset(), 0, 0
+
+                # When reset state, select option with best option-value
+                Qw = ac.Qw(torch.as_tensor(o, dtype=torch.float32))
+                ac.pi.currOption = torch.argmax(Qw).numpy()
 
         # Save model
         if (epoch % save_freq == 0) or (epoch == epochs-1):
