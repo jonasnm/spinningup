@@ -53,10 +53,18 @@ class SquashedGaussianSOCActor(nn.Module):
             nn.Linear(
                 hidden_sizes[-1], N_options),
             nn.Sigmoid())
+        self.Iz = mlp([obs_dim] + list(hidden_sizes[:-2]) + [N_options],
+                      activation)
         self.act_limit = act_limit
         self.act_dim = act_dim
         self.currOption = np.array(0, dtype=np.long)
         self.N_options = N_options
+
+    def InitSet(self, obs):
+        Iz = self.Iz(obs)
+        Iz = torch.sigmoid(Iz)
+        #Iz = torch.softmax(Iz, dim=-1)
+        return Iz
 
     def getBeta(self, obs):
         net_out = self.net(obs)
@@ -157,11 +165,15 @@ class MLPOptionCritic(nn.Module):
             # else get new option
             else:
                 Qw = self.Qw(obs)
+                Iz = self.pi.InitSet(obs)
                 probs = torch.softmax(Qw/0.1, dim=-1).detach()
-                pi_O = torch.distributions.Categorical(probs)
+                probs_z = torch.softmax(Iz*probs, dim=-1)
+                pi_O = torch.distributions.Categorical(probs_z)
                 option = pi_O.sample().item()
                 self.pi.currOption = option
         else:
             Qw = self.Qw(obs)
             probs = torch.softmax(Qw/0.1, dim=-1).detach()
-            return probs
+            Iz = self.pi.InitSet(obs)
+            probs_z = torch.softmax(Iz*probs, dim=-1)
+            return probs_z

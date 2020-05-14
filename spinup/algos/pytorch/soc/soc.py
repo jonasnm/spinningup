@@ -241,7 +241,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         # Entropy-regularized policy loss
         loss_pi = (alpha*logp_pi - Qu_pi).mean()
 
-        # values for "beta-target"
+        # values for Iz- and beta target
         with torch.no_grad():
             PiO_probs = ac.getOption(o2, ChangeOption=False)
             Qw_next = ac.Qw(o2)
@@ -254,15 +254,22 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         beta_next = beta_next.gather(-1, w).squeeze(-1)
         loss_beta = (beta_next*Aw).mean()
 
+        # Initiation loss
+        Iz = ac.pi.InitSet(o2)
+        PiOz_probs = torch.softmax(Iz*PiO_probs, dim=-1)
+        PiOz_probs = PiOz_probs.gather(-1, w).squeeze(-1)
+        loss_Iz = (-beta_next.detach()*PiOz_probs*Qw_next).mean()
+
         # Useful info for logging
         pi_info = dict(LogPi=logp_pi.detach().numpy())
 
-        return loss_pi, loss_beta, pi_info
+        return loss_pi, loss_beta, loss_Iz, pi_info
 
     # Set up optimizers for policy, q-functions
     q_optimizer = Adam(q_params, lr=lr)
     Qw_optimizer = Adam(ac.Qw.parameters(), lr=lr)
     pi_optimizer = Adam(ac.pi.parameters(), lr=lr)
+    Iz_optimizer = Adam(ac.pi.Iz.parameters(), lr=lr)
     beta_optimizer = Adam(ac.pi.beta.parameters(), lr=lr)
 
     # Set up model saving
@@ -289,11 +296,14 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
         # Next run one gradient descent step for pi.
         pi_optimizer.zero_grad()
+        Iz_optimizer.zero_grad()
         beta_optimizer.zero_grad()
-        loss_pi, loss_beta, pi_info = compute_loss_pi(data)
+        loss_pi, loss_beta, loss_Iz, pi_info = compute_loss_pi(data)
         loss_pi.backward()
+        loss_Iz.backward()
         loss_beta.backward()
         pi_optimizer.step()
+        Iz_optimizer.step()
         beta_optimizer.step()
 
         # Unfreeze Q-networks so you can optimize it at next DDPG step.
