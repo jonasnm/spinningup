@@ -28,10 +28,11 @@ class VPGBuffer:
         self.ret_buf = np.zeros(size, dtype=np.float32)
         self.val_buf = np.zeros(size, dtype=np.float32)
         self.options_buf = np.zeros(size, dtype=np.long)
+        self.done_buf = np.zeros(size, dtype=np.float32)
         self.gamma, self.lam = gamma, lam
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
-    def store(self, obs, act, rew, obs2, options, val):
+    def store(self, obs, act, rew, obs2, options, done, val):
         """
         Append one timestep of agent-environment interaction to the buffer.
         """
@@ -41,6 +42,8 @@ class VPGBuffer:
         self.rew_buf[self.ptr] = rew
         self.obs2_buf[self.ptr] = obs2
         self.options_buf[self.ptr] = options
+        self.done_buf[self.ptr] = done
+
         self.val_buf[self.ptr] = val
         self.ptr += 1
 
@@ -86,13 +89,13 @@ class VPGBuffer:
         adv_mean, adv_std = mpi_statistics_scalar(self.adv_buf)
         self.adv_buf = (self.adv_buf - adv_mean) / adv_std
         data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf,
-                    adv=self.adv_buf, obs2=self.obs2_buf, options=self.options_buf)
+                    adv=self.adv_buf, obs2=self.obs2_buf, options=self.options_buf, done=self.done_buf)
         return {k: torch.as_tensor(v, dtype=torch.float32) for k, v in data.items()}
 
 
-def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(),  seed=0,
+def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         steps_per_epoch=4000, epochs=50, gamma=0.99, pi_lr=3e-4,
-        vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000, N_options=2,
+        vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000, N_options=2, c=0.07,
         logger_kwargs=dict(), save_freq=10):
     """
     Vanilla Policy Gradient 
@@ -206,38 +209,78 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(),  seed=0,
     sync_params(ac)
 
     # Count variables
-    var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.v])
-    logger.log('\nNumber of parameters: \t pi: %d, \t v: %d\n' % var_counts)
+    var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.Qw])
+    logger.log('\nNumber of parameters: \t pi: %d, \t Qw: %d\n' % var_counts)
 
     # Set up experience buffer
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
     buf = VPGBuffer(obs_dim, act_dim, N_options,
                     local_steps_per_epoch, gamma, lam)
 
-    # Set up function for computing VPG policy loss
-    def compute_loss_pi(data):
-        obs, act, w, adv = data['obs'], data['act'], data['options'], data['adv']
+    # Set up function for computing critic loss
+
+    def compute_loss_v(data):
+        lossFun = torch.nn.MSELoss()
+        o, o2, w, r, d = data['obs'], data['obs2'], data['options'], data['ret'], data['done']
+        w = w.unsqueeze(-1)
+
+        # Get action- and option-values
+        Qw = ac.Qw(o)
+
+        # Get option-value for the given options
+        Qw = Qw.gather(-1, w).squeeze(-1)
+
+        # Bellman backup for Q functions
+        with torch.no_grad():
+
+            # Termination probabilities
+            beta_next = ac.pi.getBeta(o2)
+            beta_next = beta_next.gather(-1, w).squeeze(-1)
+
+            # Target Q-values and termination probability beta
+            Qw_next = ac.Qw(o2)
+            V_next = Qw_next.max(1).values
+
+            # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
+            Qw_next = Qw_next.gather(-1, w).squeeze(-1)
+
+            gt = r + gamma * (1 - d) * (1-d)*((1-beta_next) *
+                                              Qw_next + beta_next*V_next)
+
+        return lossFun(Qw, gt), gt
+
+    # Set up function for computing intra-policy loss
+    def compute_loss_pi(data, gt=None):
+        o, o2, act, w, adv = data['obs'], data['obs2'], data['act'], data['options'], data['adv']
+        w = w.unsqueeze(-1)
 
         # Policy loss
-        a, logp = ac.pi(obs, w)
-        pi = ac.pi._distribution(obs, w)
-        loss_pi = -(logp * adv).mean()
+        pi = ac.pi._distribution(o, w)
+        logp = pi.log_prob(act).sum(-1)
+        loss_pi = -(logp*gt).mean()
+
+        # values for "beta-target"
+        with torch.no_grad():
+            Qw_next = ac.Qw(o2)
+            V_next = Qw_next.max(-1).values
+            Qw_next = Qw_next.gather(-1, w).squeeze(-1)
+            Aw = (Qw_next - V_next) + c
+
+        # Termination loss
+        beta_next = ac.pi.getBeta(o2)
+        beta_next = beta_next.gather(-1, w).squeeze(-1)
+        loss_beta = (beta_next*Aw).mean()
 
         # Useful extra info
         ent = pi.entropy().mean().item()
         pi_info = dict(ent=ent)
 
-        return loss_pi, pi_info
-
-    # Set up function for computing value loss
-    def compute_loss_v(data):
-        obs, ret = data['obs'], data['ret']
-        lossFun = torch.nn.MSELoss()
-        return lossFun(ac.v(obs), ret)
+        return loss_pi, loss_beta, pi_info
 
     # Set up optimizers for policy and value function
+    Qw_optimizer = Adam(ac.Qw.parameters(), lr=vf_lr)
     pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
-    vf_optimizer = Adam(ac.v.parameters(), lr=vf_lr)
+    beta_optimizer = Adam(ac.pi.beta.parameters(), lr=pi_lr)
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
@@ -247,32 +290,27 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(),  seed=0,
         data['options'] = torch.as_tensor(
             data['options'], dtype=torch.long)
 
-        # Get loss and info values before update
-        pi_l_old, pi_info_old = compute_loss_pi(data)
-        pi_l_old = pi_l_old.item()
-        v_l_old = compute_loss_v(data).item()
-
         # Value function learning
         for i in range(train_v_iters):
-            vf_optimizer.zero_grad()
-            loss_v = compute_loss_v(data)
-            loss_v.backward()
-            mpi_avg_grads(ac.v)    # average grads across MPI processes
-            vf_optimizer.step()
+            Qw_optimizer.zero_grad()
+            loss_Qw, gt = compute_loss_v(data)
+            loss_Qw.backward()
+            # mpi_avg_grads(ac.v)    # average grads across MPI processes
+            Qw_optimizer.step()
 
         # Train policy with a single step of gradient descent
         pi_optimizer.zero_grad()
-        loss_pi, pi_info = compute_loss_pi(data)
+        beta_optimizer.zero_grad()
+        loss_pi, loss_beta, pi_info = compute_loss_pi(data, gt)
         loss_pi.backward()
+        loss_beta.backward()
         mpi_avg_grads(ac.pi)    # average grads across MPI processes
         pi_optimizer.step()
+        beta_optimizer.step()
 
         # Log changes from update
-        ent = pi_info_old['ent']
-        logger.store(LossPi=pi_l_old, LossV=v_l_old,
-                     Entropy=ent,
-                     DeltaLossPi=(loss_pi.item() - pi_l_old),
-                     DeltaLossV=(loss_v.item() - v_l_old))
+        #ent = pi_info_old['ent']
+        logger.store(LossPi=loss_pi, LossQw=loss_Qw)
 
     # Prepare for interaction with environment
     start_time = time.time()
@@ -280,20 +318,21 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(),  seed=0,
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
-        w = torch.as_tensor(ac.pi.currOption, dtype=torch.long)
         for t in range(local_steps_per_epoch):
+            w = torch.as_tensor(ac.pi.currOption, dtype=torch.long)
             a = ac.act(torch.as_tensor(
                 o, dtype=torch.float32))
-            v = ac.v(torch.as_tensor(
+            Qw = ac.Qw(torch.as_tensor(
                 o, dtype=torch.float32))
+            Qw = Qw.gather(-1, w).squeeze(-1)
 
             o2, r, d, _ = env.step(a)
             ep_ret += r
             ep_len += 1
 
             # save and log
-            buf.store(o, a, r, o2, w, v)
-            logger.store(VVals=v)
+            buf.store(o, a, r, o2, w, d, Qw)
+            logger.store(Qw=Qw)
 
             # Update obs (critical!)
             o = o2
@@ -308,8 +347,9 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(),  seed=0,
                           ep_len, flush=True)
                 # if trajectory didn't reach terminal state, bootstrap value target
                 if timeout or epoch_ended:
-                    v = ac.v(torch.as_tensor(
-                        o, dtype=torch.float32)).detach().numpy()
+                    3
+                    # v = ac.v(torch.as_tensor(
+                    #    o, dtype=torch.float32)).detach().numpy()
                 else:
                     v = 0
                 buf.finish_path(v)
@@ -329,13 +369,8 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('Epoch', epoch)
         logger.log_tabular('EpRet', with_min_and_max=True)
         logger.log_tabular('EpLen', average_only=True)
-        logger.log_tabular('VVals', with_min_and_max=True)
         logger.log_tabular('TotalEnvInteracts', (epoch+1)*steps_per_epoch)
         logger.log_tabular('LossPi', average_only=True)
-        logger.log_tabular('LossV', average_only=True)
-        logger.log_tabular('DeltaLossPi', average_only=True)
-        logger.log_tabular('DeltaLossV', average_only=True)
-        logger.log_tabular('Entropy', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
 

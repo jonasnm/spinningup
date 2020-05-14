@@ -78,7 +78,6 @@ class MLPCategoricalActor(Actor):
         return pi.log_prob(act)
 
 
-
 class MLPCritic(nn.Module):
 
     def __init__(self, obs_dim, hidden_sizes, activation):
@@ -107,7 +106,8 @@ class MLPOptionCritic(nn.Module):
                 obs_dim, action_space.n, hidden_sizes, activation)
 
         # build value function
-        self.v = MLPCritic(obs_dim, hidden_sizes, activation)
+        self.Qw = QwFunction(obs_dim, act_dim, N_options,
+                             hidden_sizes, activation)
 
     def step(self, obs):
         w = self.pi.currOption
@@ -128,16 +128,18 @@ class MLPOptionCritic(nn.Module):
     #     return self.step(obs)[0]
 
 
-class MLPQuFunction(nn.Module):
+class QwFunction(nn.Module):
 
     def __init__(self, obs_dim, act_dim, N_options, hidden_sizes, activation):
         super().__init__()
-        self.q = mlp([obs_dim + act_dim] +
-                     list(hidden_sizes) + [N_options], activation)
+        self.z = mlp([obs_dim] + list(hidden_sizes), activation, activation)
+        self.Qw = nn.Linear(hidden_sizes[-1], N_options)
 
-    def forward(self, obs, option, act):
-        q = self.q(torch.cat([obs, act], dim=-1))
-        return q.gather(-1, option).squeeze(-1)
+    def forward(self, obs):
+        z = self.z(torch.as_tensor(
+            obs, dtype=torch.float32))
+        Qw = self.Qw(z)
+        return Qw
 
 
 class GaussianOCActor(nn.Module):
@@ -149,7 +151,7 @@ class GaussianOCActor(nn.Module):
 
         log_std = -0.5 * np.ones(act_dim*N_options, dtype=np.float32)
         self.log_std = torch.nn.Parameter(torch.as_tensor(log_std))
-        #self.log_std_layer = nn.Linear(hidden_sizes[-1], N_options*act_dim)
+        self.log_std_layer = nn.Linear(hidden_sizes[-1], N_options*act_dim)
         self.beta = nn.Sequential(
             nn.Linear(
                 hidden_sizes[-1], N_options),
@@ -159,12 +161,14 @@ class GaussianOCActor(nn.Module):
         self.N_options = N_options
 
     def getBeta(self, obs):
-        net_out = self.net(obs)
+        net_out = self.net(torch.as_tensor(
+            obs, dtype=torch.float32))
         beta = self.beta(net_out)
         return beta
 
     def forward(self, obs, options, deterministic=False, with_logprob=True):
-        net_out = self.net(obs)
+        net_out = self.net(torch.as_tensor(
+            obs, dtype=torch.float32))
         z_mu = self.mu_layer(net_out)
         #z_log_std = self.log_std_layer(net_out)
         z_log_std = self.log_std
@@ -198,16 +202,20 @@ class GaussianOCActor(nn.Module):
         return pi_action, logp_pi
 
     def _distribution(self, obs, w):
-        net_out = self.net(obs)
+        net_out = self.net(torch.as_tensor(
+            obs, dtype=torch.float32))
         z_mu = self.mu_layer(net_out)
-        #z_log_std = self.log_std_layer(net_out)
-        z_log_std = self.log_std
+        z_log_std = self.log_std_layer(net_out)
+        #z_log_std = self.log_std
         mu = z_mu.view(-1, self.act_dim, self.N_options)
         log_std = z_log_std.view(-1, self.act_dim, self.N_options)
 
         #log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
 
-        # Pre-squash distribution and sample
-        pi_distribution = Normal(mu, std)
+        # select mu for given options
+        w = w.repeat(1, self.act_dim).view(-1, self.act_dim, 1)
+        mu = mu.gather(-1, w).squeeze(0).squeeze(-1)
+        std = std.gather(-1, w).squeeze(0).squeeze(-1)
+
         return Normal(mu, std)
