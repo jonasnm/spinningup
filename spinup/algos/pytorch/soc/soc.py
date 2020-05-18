@@ -52,7 +52,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99,
         polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000,
         update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000,
-        logger_kwargs=dict(), save_freq=1, N_options=2, eps=0.1):
+        logger_kwargs=dict(), save_freq=1, N_options=2, eps=0.1, c=0.05):
     """
     Soft Option-Critic (SOC)
 
@@ -326,7 +326,6 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     o, ep_ret, ep_len = env.reset(), 0, 0
-    c = 0.07
 
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
