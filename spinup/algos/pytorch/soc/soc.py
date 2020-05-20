@@ -217,8 +217,9 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
                                             Qw_next + beta_next*V_next)
 
         # MSE loss against Bellman backup
-        loss_Qw = ((Qw - target)**2).mean()
-        loss_q = ((Qu - target)**2).mean()
+        loss = torch.nn.MSELoss()
+        loss_Qw = loss(Qw, target)
+        loss_q = loss(Qu, target)
 
         # Useful info for logging
         q_info = dict(Qu=Qu.detach().numpy(),
