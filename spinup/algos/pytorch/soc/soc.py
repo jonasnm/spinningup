@@ -200,6 +200,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         with torch.no_grad():
             # Target actions and corresponding log-probs come from *current* policy
             a2, logp_a2 = ac.pi(o2, w)
+            a2_w = ac.pi.selectOptionAct(w, a2)
 
             # Termination probabilities
             beta_next = ac.pi.getBeta(o2)
@@ -232,6 +233,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     def compute_loss_pi(data):
         o, o2, w = data['obs'], data['obs2'], data['option']
         pi_action, logp_pi = ac.pi(o, w)
+        pi_action = ac.pi.selectOptionAct(w, pi_action)
         logp_pi = logp_pi.gather(-1, w).squeeze(-1)
         Qu_pi = ac.q(o, w, pi_action)
 
