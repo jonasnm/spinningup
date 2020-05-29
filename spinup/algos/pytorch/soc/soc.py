@@ -199,7 +199,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         # Bellman backup for Q functions
         with torch.no_grad():
             # Target actions and corresponding log-probs come from *current* policy
-            logp_a_tilde = ac.pi(o, w)
+            _, logp_a_tilde = ac.pi(o, w)
 
             # Termination probabilities
             beta_next = ac.pi.getBeta(o2)
