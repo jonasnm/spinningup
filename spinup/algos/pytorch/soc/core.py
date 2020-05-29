@@ -111,12 +111,17 @@ class QwFunction(nn.Module):
 
     def __init__(self, obs_dim, act_dim, N_options, hidden_sizes, activation):
         super().__init__()
-        self.z = mlp([obs_dim] + list(hidden_sizes), activation, activation)
-        self.Qw = nn.Linear(hidden_sizes[-1], N_options)
+        self.z = mlp([obs_dim] + list(hidden_sizes),
+                     activation, activation)
+        self.V_stream = nn.Linear(hidden_sizes[-1], 1)
+        self.A_stream = nn.Linear(hidden_sizes[-1], N_options)
 
     def forward(self, obs):
         z = self.z(obs)
-        Qw = self.Qw(z)
+        V = self.V_stream(z)
+        A = self.A_stream(z)
+        A_tilde = A - A.mean(dim=-1).unsqueeze_(-1)
+        Qw = V + A_tilde
         return Qw
 
 
