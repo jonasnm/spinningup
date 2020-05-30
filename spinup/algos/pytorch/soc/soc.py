@@ -206,13 +206,17 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             beta_next = beta_next.gather(-1, w).squeeze(-1)
 
             # Target Q-values and termination probability beta
-            Qw_next = ac_targ.Qw(o2)
-            V_next = Qw_next.max(1).values
+            Qw_next = ac.Qw(o2)
+            Qw_next_targ = ac_targ.Qw(o2)
+
+            # Select option from online net, evaluate with target net (DDQN-trick)
+            W = Qw_next.argmax(-1).unsqueeze(-1)
+            V_next = Qw_next_targ.gather(-1, W).squeeze(-1)
 
             # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
-            Qw_next = Qw_next.gather(-1, w).squeeze(-1)
+            Qw_next_targ = Qw_next_targ.gather(-1, w).squeeze(-1)
 
-            U = (1-beta_next)*Qw_next + beta_next*V_next
+            U = (1-beta_next)*Qw_next_targ + beta_next*V_next
             target = r + gamma*(1 - d)*U
             target_Qw = target - alpha*logp_a_tilde.gather(-1, w).squeeze(-1)
 
