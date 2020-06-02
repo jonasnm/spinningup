@@ -63,7 +63,7 @@ class SquashedGaussianSOCActor(nn.Module):
         beta = self.beta(net_out)
         return beta
 
-    def forward(self, obs, options, deterministic=False, with_logprob=True):
+    def forward(self, obs, deterministic=False, with_logprob=True):
         net_out = self.net(obs)
         z_mu = self.mu_layer(net_out)
         z_log_std = self.log_std_layer(net_out)
@@ -144,7 +144,7 @@ class MLPOptionCritic(nn.Module):
             w = self.pi.currOption
         with torch.no_grad():
             w = torch.as_tensor(w, dtype=torch.long)
-            a, _ = self.pi(obs, w, deterministic, False)
+            a, _ = self.pi(obs, deterministic, False)
             a = self.pi.selectOptionAct(w, a)
             return a[0].numpy()
 
