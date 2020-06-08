@@ -52,7 +52,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99,
         polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000,
         update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000,
-        logger_kwargs=dict(), save_freq=1, N_options=2, eps=0.1):
+        logger_kwargs=dict(), save_freq=1, N_options=2, eps=0.1, c=0.03):
     """
     Soft Option-Critic (SOC)
 
@@ -199,7 +199,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         # Bellman backup for Q functions
         with torch.no_grad():
             # Target actions and corresponding log-probs come from *current* policy
-            a2, logp_a2 = ac.pi(o2, w)
+            _, logp_a_tilde = ac.pi(o, w)
 
             # Termination probabilities
             beta_next = ac.pi.getBeta(o2)
@@ -207,18 +207,19 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
             # Target Q-values and termination probability beta
             Qw_next = ac_targ.Qw(o2)
-            Qw_next = Qw_next - alpha*logp_a2
             V_next = Qw_next.max(1).values
 
             # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
             Qw_next = Qw_next.gather(-1, w).squeeze(-1)
 
-            target = r + gamma * (1 - d) * ((1-beta_next) *
-                                            Qw_next + beta_next*V_next)
+            U = (1-beta_next)*Qw_next + beta_next*V_next
+            target = r + gamma*(1 - d)*U
+            target_Qw = target - alpha*logp_a_tilde.gather(-1, w).squeeze(-1)
 
         # MSE loss against Bellman backup
-        loss_Qw = ((Qw - target)**2).mean()
-        loss_q = ((Qu - target)**2).mean()
+        loss = torch.nn.MSELoss()
+        loss_Qw = loss(Qw, target_Qw)
+        loss_q = loss(Qu, target)
 
         # Useful info for logging
         q_info = dict(Qu=Qu.detach().numpy(),
@@ -231,6 +232,7 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     def compute_loss_pi(data):
         o, o2, w = data['obs'], data['obs2'], data['option']
         pi_action, logp_pi = ac.pi(o, w)
+        pi_action = ac.pi.selectOptionAct(w, pi_action)
         logp_pi = logp_pi.gather(-1, w).squeeze(-1)
         Qu_pi = ac.q(o, w, pi_action)
 
@@ -326,7 +328,6 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     o, ep_ret, ep_len = env.reset(), 0, 0
-    c = 0.07
 
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):

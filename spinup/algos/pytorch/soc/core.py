@@ -98,10 +98,13 @@ class SquashedGaussianSOCActor(nn.Module):
 
         pi_action = torch.tanh(pi_action)
         pi_action = self.act_limit * pi_action
-        options = options.repeat(1, self.act_dim).view(-1, self.act_dim, 1)
-        pi_action = pi_action.gather(-1, options).squeeze(0).squeeze(-1)
 
         return pi_action, logp_pi
+
+    def selectOptionAct(self, options, pi_action):
+        options = options.repeat(1, self.act_dim).view(-1, self.act_dim, 1)
+        pi_action = pi_action.gather(-1, options).squeeze(-1)
+        return pi_action
 
 
 class QwFunction(nn.Module):
@@ -142,7 +145,8 @@ class MLPOptionCritic(nn.Module):
         with torch.no_grad():
             w = torch.as_tensor(w, dtype=torch.long)
             a, _ = self.pi(obs, w, deterministic, False)
-            return a.numpy()
+            a = self.pi.selectOptionAct(w, a)
+            return a[0].numpy()
 
     def getOption(self, obs):
         w = self.pi.currOption
