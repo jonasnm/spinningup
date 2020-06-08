@@ -96,7 +96,7 @@ class VPGBuffer:
 
 def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
         steps_per_epoch=4000, epochs=50, gamma=0.99, pi_lr=3e-4,
-        vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000, N_options=2, c=0.07, polyak=0.995,
+        vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000, N_options=2, c=0.03, polyak=0.995,
         logger_kwargs=dict(), save_freq=10):
     """
     Vanilla Policy Gradient 
@@ -104,9 +104,7 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
     (with GAE-Lambda for advantage estimation)
 
     Args:
-        env_fn : A function which creates a copy of the environment.
-            The environment must satisfy the OpenAI Gym API.
-
+        env_fn : A function which creates a copy of the environment.eg.add('lr', [1e-3, 2e-3, 3e-3])
         actor_critic: The constructor method for a PyTorch Module with a 
             ``step`` method, an ``act`` method, a ``pi`` module, and a ``v`` 
             module. The ``step`` method should accept a batch of observations 
@@ -266,8 +264,8 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             # select Qw and beta for given options, reduce to 1-dim tensor with squeeze
             Qw_next = Qw_next.gather(-1, w).squeeze(-1)
 
-            gt = r + gamma * (1 - d) * (1-d)*((1-beta_next) *
-                                              Qw_next + beta_next*V_next)
+            gt = r + gamma * (1-d)*((1-beta_next) *
+                                    Qw_next + beta_next*V_next)
 
         return lossFun(Qw, gt), gt
 
@@ -317,7 +315,7 @@ def oc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             Qw_optimizer.zero_grad()
             loss_Qw, gt = compute_loss_v(data)
             loss_Qw.backward()
-            # mpi_avg_grads(ac.v)    # average grads across MPI processes
+            mpi_avg_grads(ac.Qw)    # average grads across MPI processes
             Qw_optimizer.step()
 
         # Train policy with a single step of gradient descent
