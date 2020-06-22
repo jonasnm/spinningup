@@ -310,9 +310,10 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
                 p_targ.data.add_((1 - polyak) * p.data)
 
     def get_action(o, deterministic=False):
+        a = ac.act(torch.as_tensor(o, dtype=torch.float32),
+                   deterministic=deterministic)
         ac.getOption(o)
-        return ac.act(torch.as_tensor(o, dtype=torch.float32),
-                      deterministic=deterministic)
+        return a
 
     def test_agent():
         for j in range(num_test_episodes):
@@ -342,14 +343,13 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
             w = ac.pi.currOption
             a = get_action(o)
 
-        # Step the env
+            # Step the env
         o2, r, d, _ = env.step(a)
         ep_ret += r
         ep_len += 1
 
         # Deliberation cost
         r_tilde = r + (w == ac.pi.currOption)*c
-        w = ac.pi.currOption
 
         # Ignore the "done" signal if it comes from hitting the time
         # horizon (that is, when it's an artificial terminal signal
