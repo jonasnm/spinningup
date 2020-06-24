@@ -148,21 +148,24 @@ class MLPOptionCritic(nn.Module):
             a = self.pi.selectOptionAct(w, a)
             return a[0].numpy()
 
-    def getOption(self, obs):
+    def getOption(self, obs, ChangeOption=True):
         w = self.pi.currOption
         obs = torch.as_tensor(obs, dtype=torch.float32)
         beta = self.pi.getBeta(obs)
-        # keep current option with probability 1-beta_w
-        if (1-beta[w]) > np.random.rand():
-            option = w
 
-        # else get new option
-        else:
-            N_options = len(beta)
-            if np.random.rand() > self.eps:
-                Qw = self.Qw(obs)
-                option = np.argmax(Qw.detach().numpy())
+        if ChangeOption:
+            # keep current option with probability 1-beta_w
+            if (1-beta[w]) > np.random.rand():
+                option = w
+
+            # else get new option
             else:
-                option = np.random.choice(np.arange(N_options))
-        self.pi.currOption = option
-        return option
+                Qw = self.Qw(obs)
+                probs = torch.softmax(Qw/0.1, dim=-1).detach()
+                pi_O = torch.distributions.Categorical(probs)
+                option = pi_O.sample().item()
+                self.pi.currOption = option
+        else:
+            Qw = self.Qw(obs)
+            probs = torch.softmax(Qw/0.1, dim=-1).detach()
+            return probs
