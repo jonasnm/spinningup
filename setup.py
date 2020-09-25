@@ -28,6 +28,7 @@ setup(
         'seaborn==0.8.1',
         # 'tensorflow',
         'torch',
+        'skbuild'
         'tqdm'
     ],
     description="Teaching tools for introducing people to deep RL.",
