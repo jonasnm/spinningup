@@ -27,7 +27,7 @@ setup(
         'scipy',
         'seaborn==0.8.1',
         # 'tensorflow',
-        'pytorch',
+        'torch',
         'skbuild',
         'tqdm'
     ],
