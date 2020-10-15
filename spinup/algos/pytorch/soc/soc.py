@@ -150,8 +150,12 @@ def soc(env_fn, actor_critic=core.MLPOptionCritic, ac_kwargs=dict(), seed=0,
 
     """
 
+    # MPI hack added by jonas
+    setup_pytorch_for_mpi()
+
     logger = EpochLogger(**logger_kwargs)
     logger.save_config(locals())
+
 
     torch.manual_seed(seed)
     np.random.seed(seed)
