@@ -7,6 +7,7 @@ import gym
 import time
 import spinup.algos.pytorch.soc.core as core
 from spinup.utils.logx import EpochLogger
+from spinup.utils.mpi_pytorch import setup_pytorch_for_mpi, sync_params, mpi_avg_grads
 
 
 class ReplayBuffer:
